@@ -124,7 +124,14 @@
   (regexp-match "\\.hex$" filename))
 
 (define (file-extension filename)
-  (third (regexp-match "^(.*)\\.(.*?)$" (extract-filename filename))))
+  (let ([m (regexp-match "^(.*)\\.(.*?)$" (extract-filename filename))])
+    (cond
+      [m (third m)]
+      [else ""])))
+
+(define (->lower o)
+  (let ([s (~a o)])
+    (string-downcase s)))
 
 (define make-server-url 
   (λ args
