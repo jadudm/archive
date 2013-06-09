@@ -21,6 +21,7 @@ I'm not 100% sure if that is a distributable binary, but it works for my purpose
 
 usage
 ===
+<pre>
 $ archive -h
 
 archive [ <option> ... ] <src> <dst>
@@ -37,3 +38,4 @@ archive [ <option> ... ] <src> <dst>
  /|\ Brackets indicate mutually exclusive options.
  Multiple single-letter switches can be combined after one `-'; for
   example: `-h-' is the same as `-h --'
+</pre>
