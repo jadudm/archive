@@ -9,6 +9,11 @@
 
 (require "debug.rkt")
 
+(define (true? o)
+  (and (boolean? o)
+       o))
+  
+
 (define (->sym v)
   (string->symbol (format "~a" v)))
 

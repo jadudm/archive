@@ -2,11 +2,14 @@
 
 (provide system-call
          exe-in-tempdir
-         )
+         exe)
 (require "util.rkt")
 
 ;; CODE EXECUTION
 ;;;;;;;;;;;;;;;;;;
+
+(define (exe cmd)
+  (system/exit-code cmd))
 
 (define (exe-in-tempdir temp-dir cmd)
   (parameterize ([current-directory temp-dir])
