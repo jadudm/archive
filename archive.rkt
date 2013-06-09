@@ -36,7 +36,7 @@
 (define (tar-cmd)
   (system-call 
    'tar
-   `(cvf 
+   `(cf ;cvf
      ,(->string (tarfile))
      ,(extract-filename (source)))))
 
@@ -53,7 +53,7 @@
   (system-call
    'par2 
    `(create 
-     -v 
+     ;-v 
      ,(format "-r~a" (redundancy))
      ,(format "~a.par2" (target))
      ,(archive))))
