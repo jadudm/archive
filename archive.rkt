@@ -25,10 +25,10 @@
 
 (define target       (make-parameter false))
 (define tarfile      (make-parameter false))
-(define archive   (make-parameter false))
+(define archive      (make-parameter false))
 (define compress?    (make-parameter false))
 (define extension    (make-parameter "tar"))
-(define threshold    (make-parameter 0.75))
+(define threshold    (make-parameter 0.65))
 
 ;; Size in bytes
 (define block-size   (make-parameter 50000000))
@@ -75,7 +75,7 @@
         ;; Images
         png jpg jpeg gif cr2
         ;; Documents
-        pdf
+        
         ))
 
 (define (incompressible? path)
@@ -127,12 +127,13 @@
     ))
 
 (define (compressible? p)
-  (let ([sizes (tc p)])
-    (> 
-     (/ (first sizes)
-        (+ (first sizes) (second sizes)))
-     (threshold)
-     )))
+  (let* ([sizes (tc p)]
+         [ratio (/ (first sizes)
+                   (+ (first sizes) (second sizes)))])
+    (debug 'COMPRESSIBLE-RATIO "~a" sizes)
+    (debug 'COMPRESSIBLE-RATIO "~a" ratio)
+    
+    (> ratio (threshold))))
 
 (define (make-archive)
   (define p (new process%))
@@ -211,11 +212,15 @@
          ))]
     
     
-    ;; REMOVE THE TARBALL
+    ;; REMOVE THE TARBALL IF WE SPLIT IT
     [(pass 'ERROR-PAR2)
-     (debug 'TAR "Removing the archive at [~a]" (archive))
-     (parameterize ([current-directory (build-path (destination) (target))])
-       (delete-file (archive)))]
+     (parameterize ([current-directory
+                     (build-path (destination) (target))])
+       (let ([size (file-size (archive))])
+         (debug 'SPLIT "Archive size [~a]" size)
+         (when (> size (block-size))
+           (debug 'TAR "Removing the archive at [~a]" (archive))
+           (delete-file (archive)))))]
     ;; DONE
     [(pass 'ERROR-DONE)
      (printf "Done.")]
@@ -228,12 +233,12 @@
    #:program "archive"
    
    #:once-any
-   [("-b" "--block-size") bs
+   [("-b" "--block-size-bytes") bs
                           "Size of archive blocks (in bytes)"
                           (block-size (string->number bs))]
-   [("-m" "--megablock-size") mbs
-                              "Size of archive blocks (in megabytes)"
-                              (block-size (* 1000000 (string->number mbs)))]
+   [("-m" "--block-size-mb") mbs
+                             "Size of archive blocks (in megabytes)"
+                             (block-size (* 1000000 (string->number mbs)))]
    
    #:once-each
    [("-t" "--tag") t
@@ -277,7 +282,7 @@
       (extension "tar.bz2")]
      [else (extension "tar")])
    
-   (target (format "~a-~a" (year) (tag)))
+   (target (format "~a-~a-~a" (year) (tag) (extract-filename (source))))
    (tarfile (build-path (destination) (target) (format "~a.tar" (target))))
    (archive (format "~a.~a" (target) (extension)))
    
