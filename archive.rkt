@@ -45,9 +45,7 @@
    'split
    `(-b ,(block-size)
         ,(build-path (archive))
-        ,(build-path 
-          (build-path (destination) (target))
-          (->string (format "~a-split." (target)))))))
+        ,(->string (format "~a-split." (target))))))
 
 (define (par2-cmd)
   (system-call
@@ -85,7 +83,7 @@
   (tree-contents (map (λ (o)
                         (build-path path o))
                       (directory-list path))))
-                      
+
 (define (->path o)
   (cond
     [(string? o)
@@ -126,12 +124,16 @@
          [else ls]))]
     ))
 
+(define (round n pl)
+  (exact->inexact 
+   (/ (floor (* n (expt 10 pl))) (expt 10 pl))))
+
 (define (compressible? p)
   (let* ([sizes (tc p)]
          [ratio (/ (first sizes)
                    (+ (first sizes) (second sizes)))])
     (debug 'COMPRESSIBLE-RATIO "~a" sizes)
-    (debug 'COMPRESSIBLE-RATIO "~a" ratio)
+    (debug 'COMPRESSIBLE-RATIO "~a" (round (exact->inexact ratio) 2))
     
     (> ratio (threshold))))
 
@@ -148,7 +150,7 @@
      (parameterize ([current-directory
                      (build-path (source) 'up)])
        (exe (tar-cmd)))]
-;; MAKE THE MANIFEST
+    ;; MAKE THE MANIFEST
     [(pass 'ERROR-TAR)
      (parameterize ([current-directory
                      (build-path (destination) (target))])
@@ -164,11 +166,11 @@
     [(pass 'ERROR-TAR)
      (parameterize ([current-directory
                      (build-path (destination) (target))])
-     (let ([size (file-size (archive))])
-       (debug 'SPLIT "Archive size [~a]" size)
-       (when (> size (block-size))
-         (debug 'SPLIT "SPLIT CMD: ~a" (split-cmd))
-         (exe (split-cmd)))))]
+       (let ([size (file-size (archive))])
+         (debug 'SPLIT "Archive size [~a]" size)
+         (when (> size (block-size))
+           (debug 'SPLIT "SPLIT CMD: ~a" (split-cmd))
+           (exe (split-cmd)))))]
     ;; CREATE PAR2 DATA
     [(pass 'ERROR-SPLIT)
      (debug 'PAR2 "Creating [~a%] redundant archive files." (redundancy))
@@ -234,8 +236,8 @@
    
    #:once-any
    [("-b" "--block-size-bytes") bs
-                          "Size of archive blocks (in bytes)"
-                          (block-size (string->number bs))]
+                                "Size of archive blocks (in bytes)"
+                                (block-size (string->number bs))]
    [("-m" "--block-size-mb") mbs
                              "Size of archive blocks (in megabytes)"
                              (block-size (* 1000000 (string->number mbs)))]
@@ -251,7 +253,7 @@
                           "Percent redundancy in PAR2 files."
                           (redundancy r)]
    [("--threshold") th
-                    "Percent compressible in a tree before we bzip. 0.75 is the default." 
+                    "Percent compressible in a tree before we bzip. 0.65 is the default." 
                     (threshold (string->number th))]
    
    [("-c" "--compress") 
@@ -272,8 +274,8 @@
    ;; Check compressibility
    (cond
      [(compressible? (source))
-     (debug 'COMPRESS "Looks like the source is compressible.")
-     (compress? true)]
+      (debug 'COMPRESS "Looks like the source is compressible.")
+      (compress? true)]
      [else (debug 'COMPRESS "Too many files that won't compress. Skipping BZ2.")])
    
    ;; Set the archive extension
