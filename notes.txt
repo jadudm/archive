@@ -1,0 +1,17 @@
+From
+https://groups.google.com/forum/?fromgroups#!searchin/digital-curation/par2/digital-curation/lcuYD5-sXEU/DJyPGLChh7QJ
+
+1. Lakshmi N. Bairavasundaram et al., “An analysis of data corruption
+in the storage stack,” 6th USENIX Conference on File and Storage
+Technologies, San Jose, Ca., 2008.
+
+2. Jim Gray and Catharine van Ingen, Empirical Measurements of Disk
+Failure Rates and Error Rates, Microsoft Research Technical Report
+(Microsoft Research, January 25, 2007),
+http://arxiv.org/abs/cs/0701166.
+
+3. Lakshmi N. Bairavasundaram et al., “An Analysis of Latent Sector
+Errors in Disk Drives,” SIGMETRICS’07, San Diego, California, 2007,
+http://www.cs.wisc.edu/adsl/Publications/latent-sigmetrics07.pdf.
+
+4. http://crawler.archive.org/articles/developer_manual/arcs.html
