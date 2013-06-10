@@ -225,7 +225,7 @@
            (delete-file (archive)))))]
     ;; DONE
     [(pass 'ERROR-DONE)
-     (printf "Done.")]
+     (printf "Done.~n")]
     
     
     ))
