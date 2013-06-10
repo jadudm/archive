@@ -21,19 +21,20 @@ I'm not 100% sure if that is a distributable binary, but it works for my purpose
 
 usage
 ===
-$ archive -h
 
-archive [ <option> ... ] <src> <dst>
- where <option> is one of
-/ -b <bs>, --block-size-bytes <bs> : Size of archive blocks (in bytes)
-\ -m <mbs>, --block-size-mb <mbs> : Size of archive blocks (in megabytes)
-  -t <t>, --tag <t> : Identifier tag for archive.
-  -y <y>, --year <y> : Year data was generated
-  -r <r>, --redundancy <r> : Percent redundancy in PAR2 files.
-  --threshold <th> : Percent compressible in a tree before we bzip. 0.75 is the default.
-  -c, --compress : Compress with BZIP2.
-  --help, -h : Show this help
-  -- : Do not treat any remaining argument as a switch (at this level)
- /|\ Brackets indicate mutually exclusive options.
- Multiple single-letter switches can be combined after one `-'; for
-  example: `-h-' is the same as `-h --'
+  $ archive -h
+  
+  archive [ <option> ... ] <src> <dst>
+   where <option> is one of
+  / -b <bs>, --block-size-bytes <bs> : Size of archive blocks (in bytes)
+  \ -m <mbs>, --block-size-mb <mbs> : Size of archive blocks (in megabytes)
+    -t <t>, --tag <t> : Identifier tag for archive.
+    -y <y>, --year <y> : Year data was generated
+    -r <r>, --redundancy <r> : Percent redundancy in PAR2 files.
+    --threshold <th> : Percent compressible in a tree before we bzip. 0.75 is the default.
+    -c, --compress : Compress with BZIP2.
+    --help, -h : Show this help
+    -- : Do not treat any remaining argument as a switch (at this level)
+   /|\ Brackets indicate mutually exclusive options.
+   Multiple single-letter switches can be combined after one `-'; for
+    example: `-h-' is the same as `-h --'
