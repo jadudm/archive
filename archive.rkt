@@ -69,7 +69,7 @@
         ;; Archives
         zip gz tgz gz bz2 bzip2 7z
         ;; Video
-        mov avi flbv mpeg mp4 m4v wmv
+        mov avi flv mpeg mp4 m4v wmv 3gp
         ;; Images
         png jpg jpeg gif cr2
         ;; Documents
@@ -97,6 +97,7 @@
     [else 
      (let ([p (->path (first ls))])
        (cond
+         [(link-exists? p) (list 0 0)]
          [(file-exists? p) 
           ;(printf "FILE ~a~n" p)
           (let ([res (tree-contents (rest ls))])
@@ -262,7 +263,7 @@
    #:args (src dst)
    
    (when (not (and (tag) (year)))
-     (printf "Please provide a tag and year.")
+     (printf "Please provide a tag and year.~n")
      (exit))
    
    ;; SETUP
