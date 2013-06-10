@@ -44,8 +44,8 @@
   (system-call
    'split
    `(-b ,(block-size)
-        ,(build-path (archive))
-        ,(->string (format "~a-split." (target))))))
+        ,(archive)
+        ,(->string (format "~a-split." (archive))))))
 
 (define (par2-cmd)
   (system-call
