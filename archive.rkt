@@ -4,7 +4,9 @@
          "seq.rkt"
          "util.rkt"
          "debug.rkt"
-         racket/date)
+         racket/date
+         file/md5
+         )
 
 (define (pad n)
   (if (< n 10)
@@ -138,6 +140,11 @@
     
     (> ratio (threshold))))
 
+(define (generate-md5s ls)
+  (for/list ([f ls])
+     (list f (md5 (open-input-file 
+                   (build-path (destination) (target) f))))))
+
 (define (make-archive)
   (define p (new process%))
   
@@ -184,35 +191,74 @@
        (exe (par2-cmd)))]
     ;; EMIT RECOVERY SCRIPT
     [(pass 'ERROR-DELETE)
-     (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
-       (let* ([script (build-path (destination)
-                                  (target)
-                                  (format "rebuild-~a.sh" (target)))]
-              [op (open-output-file script
-                                    #:exists 'replace)])
-         (fprintf op "#!/bin/bash~n")
-         (fprintf op "echo Concatenating ~a~n" (archive))
-         (fprintf op "~a~n"
-                  (system-call 'cat 
-                               `("*-split*" ">" 
-                                            ,(archive))))
-         (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
-         (fprintf op "echo Repairing integrity of ~a~n" (archive))
-         (fprintf op "~a~n"
-                  (system-call 'par2 
-                               `(r ,(format "~a.par2" (target)))))
-         ;; Decompress
-         
-         (when (compress?)
-           (fprintf op "echo Decompressing.~n")
-           (fprintf op "if [ -f ~a ]; then~n" (archive))
-           (fprintf op "  bunzip2 ~a~n" (archive))
-           (fprintf op "fi~n"))
-         
-         (fprintf op "echo Done.~n")
-         (close-output-port op)
-         (exe (system-call 'chmod `(755 ,script)))
-         ))]
+     (debug 'MD5 "Generating MD5s for files.")
+     (let* ([check-script (build-path (destination) (target) 
+                            (format "check-md5s-~a.sh" (target)))]
+            [op (open-output-file check-script #:exists 'replace)]
+            [md5s (generate-md5s (directory-list 
+                                  (build-path
+                                   (destination) (target))))])
+       ; (debug 'MD5 "MD5s:~n~a~n" md5s)
+       (fprintf op "#!/bin/bash~n")
+       (fprintf op "echo Checking MD5s~n")
+       (fprintf op "ERROR=0~n")
+       (newline op)
+       (for ([f (map first md5s)]
+             [md5 (map second md5s)])
+         ;; We are about to delete the archive itself.
+         (cond
+           [(equal? (path->string f) (archive))
+            (fprintf op "# The archive '~a' should check as '~a'~n"
+                     f md5)]
+           [(equal? (path->string f) (format "check-md5s-~a.sh" (target)))
+            ;; Skip the check script; we change the permissions in a moment.
+            'DoNothing]
+           [else
+            (fprintf op "SUM=`md5 -q \"~a\"`~n" f)             
+            (fprintf op "if [ ${SUM} != \"~a\" ]~nthen~n" md5)
+            (fprintf op "ERROR=1~n")
+            (fprintf op "  echo MD5 error in \"~a\"~n" f)
+            (fprintf op "fi~n")])
+         (newline op))
+       (fprintf op "if [ $ERROR == 0 ]~n")
+       (fprintf op "then~n")
+       (fprintf op "  echo NO MD5 ERRORS FOUND~n")
+       (fprintf op "fi~n")
+       (close-output-port op)
+       (file-or-directory-permissions check-script #o744)
+       )]
+    
+    [(pass 'ERROR-DELETE)
+       (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
+         (let* ([script (build-path (destination)
+                                    (target)
+                                    (format "rebuild-~a.sh" (target)))]
+                [op (open-output-file script
+                                      #:exists 'replace)])
+           (fprintf op "#!/bin/bash~n")
+           
+           (fprintf op "echo Concatenating ~a~n" (archive))
+           (fprintf op "~a~n"
+                    (system-call 'cat 
+                                 `("*-split*" ">" 
+                                              ,(archive))))
+           (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
+           (fprintf op "echo Repairing integrity of ~a~n" (archive))
+           (fprintf op "~a~n"
+                    (system-call 'par2 
+                                 `(r ,(format "~a.par2" (target)))))
+           ;; Decompress
+           
+           (when (compress?)
+             (fprintf op "echo Decompressing.~n")
+             (fprintf op "if [ -f ~a ]; then~n" (archive))
+             (fprintf op "  bunzip2 ~a~n" (archive))
+             (fprintf op "fi~n"))
+           
+           (fprintf op "echo Done.~n")
+           (close-output-port op)
+           (exe (system-call 'chmod `(755 ,script)))
+           ))]
     
     
     ;; REMOVE THE TARBALL IF WE SPLIT IT
