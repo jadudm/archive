@@ -140,10 +140,15 @@
     
     (> ratio (threshold))))
 
+(define (sys-md5 f)
+  (regexp-replace* 
+   "\n"
+   (with-output-to-string (lambda () (system (format "md5 -q ~a" f))))
+   ""))
+
 (define (generate-md5s ls)
   (for/list ([f ls])
-     (list f (md5 (open-input-file 
-                   (build-path (destination) (target) f))))))
+    (list f (sys-md5 (path->string (build-path (destination) (target) f))))))
 
 (define (make-archive)
   (define p (new process%))
@@ -214,6 +219,7 @@
             ;; Skip the check script; we change the permissions in a moment.
             'DoNothing]
            [else
+            (fprintf op "echo Checking ~a~n" f)
             (fprintf op "SUM=`md5 -q \"~a\"`~n" f)             
             (fprintf op "if [ ${SUM} != \"~a\" ]~nthen~n" md5)
             (fprintf op "ERROR=1~n")
