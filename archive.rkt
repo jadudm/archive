@@ -21,7 +21,7 @@
 
 (define source       (make-parameter false))
 (define destination  (make-parameter false))
-(define tag          (make-parameter "archive"))
+(define tag          (make-parameter false))
 (define year         (make-parameter false))
 (define redundancy   (make-parameter 15))
 
@@ -31,6 +31,9 @@
 (define compress?    (make-parameter false))
 (define extension    (make-parameter "tar"))
 (define threshold    (make-parameter 0.65))
+
+;; Adding disk images
+(define disk-image   (make-parameter false))
 
 ;; Size in bytes
 (define block-size   (make-parameter 50000000))
@@ -48,6 +51,15 @@
    `(-b ,(block-size)
         ,(archive)
         ,(->string (format "~a-split." (archive))))))
+
+(define (split-disk-image-cmd)
+  (let ([basename (target)])
+    (system-call
+     'split
+     `(-b ,(block-size)
+          ,(source)
+          ,(->string (format "~a-split." basename))))
+    ))
 
 (define (par2-cmd)
   (system-call
@@ -148,9 +160,9 @@
 
 (define (generate-md5s ls)
   (for/list ([f ls])
-    (list f (sys-md5 (path->string (build-path (destination) (target) f))))))
+            (list f (sys-md5 (path->string (build-path (destination) (target) f))))))
 
-(define (make-archive)
+(define (archive-directory)
   (define p (new process%))
   
   (seq p
@@ -176,7 +188,7 @@
        (debug 'COMPRESS "CMD: ~a" (compress-cmd))
        (exe (compress-cmd)))]
     ;; SPLIT EVERYTHING UP
-    [(pass 'ERROR-TAR)
+    [(pass 'ERROR-SPLIT)
      (parameterize ([current-directory
                      (build-path (destination) (target))])
        (let ([size (file-size (archive))])
@@ -185,7 +197,7 @@
            (debug 'SPLIT "SPLIT CMD: ~a" (split-cmd))
            (exe (split-cmd)))))]
     ;; CREATE PAR2 DATA
-    [(pass 'ERROR-SPLIT)
+    [(pass 'ERROR-PAR2)
      (debug 'PAR2 "Creating [~a%] redundant archive files." (redundancy))
      ;; We can just create a reundancy file for the original archive.
      ;; The split files, when recombined, can be saved by the PAR2 file
@@ -198,7 +210,7 @@
     [(pass 'ERROR-DELETE)
      (debug 'MD5 "Generating MD5s for files.")
      (let* ([check-script (build-path (destination) (target) 
-                            (format "check-md5s-~a.sh" (target)))]
+                                      (format "check-md5s-~a.sh" (target)))]
             [op (open-output-file check-script #:exists 'replace)]
             [md5s (generate-md5s (directory-list 
                                   (build-path
@@ -210,22 +222,139 @@
        (newline op)
        (for ([f (map first md5s)]
              [md5 (map second md5s)])
-         ;; We are about to delete the archive itself.
-         (cond
-           [(equal? (path->string f) (archive))
-            (fprintf op "# The archive '~a' should check as '~a'~n"
-                     f md5)]
-           [(equal? (path->string f) (format "check-md5s-~a.sh" (target)))
-            ;; Skip the check script; we change the permissions in a moment.
-            'DoNothing]
-           [else
-            (fprintf op "echo Checking ~a~n" f)
-            (fprintf op "SUM=`md5 -q \"~a\"`~n" f)             
-            (fprintf op "if [ ${SUM} != \"~a\" ]~nthen~n" md5)
-            (fprintf op "ERROR=1~n")
-            (fprintf op "  echo MD5 error in \"~a\"~n" f)
-            (fprintf op "fi~n")])
-         (newline op))
+            ;; We are about to delete the archive itself.
+            (cond
+              [(equal? (path->string f) (archive))
+               (fprintf op "# The archive '~a' should check as '~a'~n"
+                        f md5)]
+              [(equal? (path->string f) (format "check-md5s-~a.sh" (target)))
+               ;; Skip the check script; we change the permissions in a moment.
+               'DoNothing]
+              [else
+               (fprintf op "echo Checking ~a~n" f)
+               (fprintf op "SUM=`md5 -q \"~a\"`~n" f)             
+               (fprintf op "if [ ${SUM} != \"~a\" ]~nthen~n" md5)
+               (fprintf op "ERROR=1~n")
+               (fprintf op "  echo MD5 error in \"~a\"~n" f)
+               (fprintf op "fi~n")])
+            (newline op))
+       (fprintf op "if [ $ERROR == 0 ]~n")
+       (fprintf op "then~n")
+       (fprintf op "  echo NO MD5 ERRORS FOUND~n")
+       (fprintf op "fi~n")
+       (close-output-port op)
+       (file-or-directory-permissions check-script #o744)
+       )]
+    
+    [(pass 'REBUILD-SCRIPT)
+     
+     (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
+       (debug 'REBUILD "Generating the rebuild script.")
+       (let* ([script (build-path (destination)
+                                  (target)
+                                  (format "rebuild-~a.sh" (target)))]
+              [op (open-output-file script
+                                    #:exists 'replace)])
+         (fprintf op "#!/bin/bash~n")
+           
+         (fprintf op "echo Concatenating ~a~n" (archive))
+         (fprintf op "~a~n"
+                  (system-call 'cat 
+                               `("*-split*" ">" 
+                                            ,(archive))))
+         (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
+         (fprintf op "echo Repairing integrity of ~a~n" (archive))
+         (fprintf op "~a~n"
+                  (system-call 'par2 
+                               `(r ,(format "~a.par2" (target)))))
+         ;; Decompress
+           
+         (when (compress?)
+           (fprintf op "echo Decompressing.~n")
+           (fprintf op "if [ -f ~a ]; then~n" (archive))
+           (fprintf op "  bunzip2 ~a~n" (archive))
+           (fprintf op "fi~n"))
+           
+         (fprintf op "echo Done.~n")
+         (close-output-port op)
+         (exe (system-call 'chmod `(755 ,script)))
+         ))]
+    
+    
+    ;; REMOVE THE TARBALL IF WE SPLIT IT
+    [(pass 'ERROR-PAR2)
+     (parameterize ([current-directory
+                     (build-path (destination) (target))])
+       (let ([size (file-size (archive))])
+         (debug 'SPLIT "Archive size [~a]" size)
+         (when (> size (block-size))
+           (debug 'TAR "Removing the archive at [~a]" (archive))
+           (delete-file (archive)))))]
+    ;; DONE
+    [(pass 'ERROR-DONE)
+     (printf "Done.~n")]
+    
+    
+    ))
+
+(define (archive-disk-image)
+  (define p (new process%))
+  
+  (seq p
+    [(initial? 'ERROR-STARTUP)
+     (and (directory-exists? (destination)) 
+          (file-exists? (source)))]
+    ;; SPLIT EVERYTHING UP
+    [(pass 'ERROR-SPLIT)
+     (parameterize ([current-directory
+                     (build-path (destination) (target))])
+       (let ([size (file-size (source))])
+         (debug 'SPLIT "Disk image size [~a]" size)
+         (when (> size (block-size))
+           (debug 'SPLIT "SPLIT CMD: ~a" (split-disk-image-cmd))
+           (exe (split-disk-image-cmd)))))]
+    ;; CREATE PAR2 DATA
+    [(pass 'ERROR-PAR2)
+     (debug 'PAR2 "Creating [~a%] redundant archive files." (redundancy))
+     ;; We can just create a reundancy file for the original archive.
+     ;; The split files, when recombined, can be saved by the PAR2 file
+     ;; created from the (intact) original.
+     (debug 'PAR2 "CMD: ~a" (par2-cmd))
+     (parameterize ([current-directory 
+                     (build-path (destination) (target))])
+       (exe (par2-cmd)))]
+    ;; EMIT RECOVERY SCRIPT
+    [(pass 'ERROR-DELETE)
+     (debug 'MD5 "Generating MD5s for files.")
+     (let* ([check-script (build-path (destination) (target) 
+                                      (format "check-md5s-~a.sh" (target)))]
+            [op (open-output-file check-script #:exists 'replace)]
+            [md5s (generate-md5s (directory-list 
+                                  (build-path
+                                   (destination) (target))))])
+       ; (debug 'MD5 "MD5s:~n~a~n" md5s)
+       (fprintf op "#!/bin/bash~n")
+       (fprintf op "echo Checking MD5s~n")
+       (fprintf op "ERROR=0~n")
+       (newline op)
+       (for ([f (map first md5s)]
+             [md5 (map second md5s)])
+            ;; We are about to delete the archive itself.
+            (cond
+              [(equal? (path->string f) (archive))
+               (fprintf op "# The archive '~a' should check as '~a'~n"
+                        f md5)]
+              [(equal? (path->string f) (format "check-md5s-~a.sh" (target)))
+               ;; Skip the check script; we change the permissions in a moment.
+               'DoNothing]
+              [else
+               (fprintf op "echo Checking ~a~n" f)
+               (fprintf op "SUM=`md5 -q \"~a\"`~n" f)             
+               (fprintf op "if [ ${SUM} != \"~a\" ]~nthen~n" md5)
+               (fprintf op "ERROR=1~n")
+               (fprintf op "  echo MD5 error in \"~a\"~n" f)
+               (fprintf op "fi~n")])
+            (newline op))
        (fprintf op "if [ $ERROR == 0 ]~n")
        (fprintf op "then~n")
        (fprintf op "  echo NO MD5 ERRORS FOUND~n")
@@ -235,36 +364,36 @@
        )]
     
     [(pass 'ERROR-DELETE)
-       (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
-         (let* ([script (build-path (destination)
-                                    (target)
-                                    (format "rebuild-~a.sh" (target)))]
-                [op (open-output-file script
-                                      #:exists 'replace)])
-           (fprintf op "#!/bin/bash~n")
+     (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
+       (let* ([script (build-path (destination)
+                                  (target)
+                                  (format "rebuild-~a.sh" (target)))]
+              [op (open-output-file script
+                                    #:exists 'replace)])
+         (fprintf op "#!/bin/bash~n")
            
-           (fprintf op "echo Concatenating ~a~n" (archive))
-           (fprintf op "~a~n"
-                    (system-call 'cat 
-                                 `("*-split*" ">" 
-                                              ,(archive))))
-           (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
-           (fprintf op "echo Repairing integrity of ~a~n" (archive))
-           (fprintf op "~a~n"
-                    (system-call 'par2 
-                                 `(r ,(format "~a.par2" (target)))))
-           ;; Decompress
+         (fprintf op "echo Concatenating ~a~n" (archive))
+         (fprintf op "~a~n"
+                  (system-call 'cat 
+                               `("*-split*" ">" 
+                                            ,(archive))))
+         (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
+         (fprintf op "echo Repairing integrity of ~a~n" (archive))
+         (fprintf op "~a~n"
+                  (system-call 'par2 
+                               `(r ,(format "~a.par2" (target)))))
+         ;; Decompress
            
-           (when (compress?)
-             (fprintf op "echo Decompressing.~n")
-             (fprintf op "if [ -f ~a ]; then~n" (archive))
-             (fprintf op "  bunzip2 ~a~n" (archive))
-             (fprintf op "fi~n"))
+         (when (compress?)
+           (fprintf op "echo Decompressing.~n")
+           (fprintf op "if [ -f ~a ]; then~n" (archive))
+           (fprintf op "  bunzip2 ~a~n" (archive))
+           (fprintf op "fi~n"))
            
-           (fprintf op "echo Done.~n")
-           (close-output-port op)
-           (exe (system-call 'chmod `(755 ,script)))
-           ))]
+         (fprintf op "echo Done.~n")
+         (close-output-port op)
+         (exe (system-call 'chmod `(755 ,script)))
+         ))]
     
     
     ;; REMOVE THE TARBALL IF WE SPLIT IT
@@ -314,7 +443,7 @@
     (compress? true)]
    #:args (src dst)
    
-   (when (not (and (tag) (year)))
+   (when (not (year))
      (printf "Please provide a tag and year.~n")
      (exit))
    
@@ -324,28 +453,63 @@
    (source      (string->path src))
    (destination (string->path dst))
    
-   ;; Check compressibility
    (cond
-     [(compressible? (source))
-      (debug 'COMPRESS "Looks like the source is compressible.")
-      (compress? true)]
-     [else (debug 'COMPRESS "Too many files that won't compress. Skipping BZ2.")])
+     ;; If we are archiving a directory
+     [(directory-exists? (source))
+      ;; Check compressibility
+      (cond
+        [(compressible? (source))
+         (debug 'COMPRESS "Looks like the source is compressible.")
+         (compress? true)]
+        [else
+         (debug 'COMPRESS
+                "Too many files that won't compress. Skipping BZ2.")])
    
-   ;; Set the archive extension
-   (cond
-     [(compress?)
-      (extension "tar.bz2")]
-     [else (extension "tar")])
+      ;; Set the archive extension
+      (cond
+        [(compress?)
+         (extension "tar.bz2")]
+        [else (extension "tar")])
+
+      (if (tag)
+          (target (format "~a-~a-~a" (year) (tag)
+                          (extract-filename (source))))
+          (target (format "~a-~a" (year) 
+                          (extract-filename (source)))))
+      
+      (tarfile (build-path (destination) (target) (format "~a.tar" (target))))
+      (archive (format "~a.~a" (target) (extension)))
    
-   (target (format "~a-~a-~a" (year) (tag) (extract-filename (source))))
-   (tarfile (build-path (destination) (target) (format "~a.tar" (target))))
-   (archive (format "~a.~a" (target) (extension)))
+      (unless (directory-exists? (destination))
+        (make-directory (destination)))
    
-   (unless (directory-exists? (destination))
-     (make-directory (destination)))
+      (unless (directory-exists? (build-path (destination) (target)))
+        (make-directory (build-path (destination) (target))))
+
+      (archive-directory)]
+     ;; If it is a disk image
+     [(file-exists? (source))
+      (if (tag)
+          (target (format "~a-~a-~a" (year) (tag)
+                          (regexp-replace
+                           (format ".~a$" (file-extension (source)))
+                           (extract-filename (source))
+                           "")))
+          (target (format "~a-~a" (year)
+                          (regexp-replace
+                           (format ".~a$" (file-extension (source)))
+                           (extract-filename (source))
+                           ""))))
+ 
+      (unless (directory-exists? (destination))
+        (make-directory (destination)))
    
-   (unless (directory-exists? (build-path (destination) (target)))
-     (make-directory (build-path (destination) (target))))
+      (unless (directory-exists? (build-path (destination) (target)))
+        (make-directory (build-path (destination) (target))))
+      
+      (archive-disk-image)]
+     [else
+      (error 'SOURCE "Source is neither a directory or disk image.")])
    
-   (make-archive)
+
    ))
