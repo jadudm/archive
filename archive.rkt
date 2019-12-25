@@ -13,6 +13,26 @@
       (format "0~a" n)
       (format "~a" n)))
 
+(define MD5CMD
+  (cond
+    [(equal? (system-type 'os) 'macos)
+     "md5"]
+    [(equal? (system-type 'os) 'unix)
+     "md5sum"]
+    [else
+     (error "Not supported on Windows.")]))
+
+(define MD5FLAGS
+  (cond
+    [(equal? (system-type 'os) 'macos)
+     "-q"]
+    [(equal? (system-type 'os) 'unix)
+     ""]
+    [else
+     (error "Not supported on Windows.")]))
+
+
+
 (define now          (current-date))
 (define now-year     (date-year now))
 (define now-month    (pad (date-month now)))
@@ -155,7 +175,7 @@
 (define (sys-md5 f)
   (regexp-replace* 
    "\n"
-   (with-output-to-string (lambda () (system (format "md5 -q ~a" f))))
+   (with-output-to-string (lambda () (system (format "~a ~a ~a" MD5CMD MD5FLAGS f))))
    ""))
 
 (define (generate-md5s ls)
@@ -221,7 +241,10 @@
        (fprintf op "ERROR=0~n")
        (newline op)
        (for ([f (map first md5s)]
-             [md5 (map second md5s)])
+             ;; 20191225 MCJ
+             ;; I only want the MD5
+             [md5 (map (λ (s) (first (regexp-split " " s)))
+                       (map second md5s))])
             ;; We are about to delete the archive itself.
             (cond
               [(equal? (path->string f) (archive))
@@ -232,8 +255,8 @@
                'DoNothing]
               [else
                (fprintf op "echo Checking ~a~n" f)
-               (fprintf op "SUM=`md5 -q \"~a\"`~n" f)             
-               (fprintf op "if [ ${SUM} != \"~a\" ]~nthen~n" md5)
+               (fprintf op "SUM=`~a ~a \"~a\"`~n" MD5CMD MD5FLAGS f)             
+               (fprintf op "if [[ ${SUM} != *\"~a\"* ]]~nthen~n" md5)
                (fprintf op "ERROR=1~n")
                (fprintf op "  echo MD5 error in \"~a\"~n" f)
                (fprintf op "fi~n")])
