@@ -51,6 +51,7 @@
 (define compress?    (make-parameter false))
 (define extension    (make-parameter "tar"))
 (define threshold    (make-parameter 0.65))
+(define gpg-key      (make-parameter false))
 
 ;; Adding disk images
 (define disk-image   (make-parameter false))
@@ -180,71 +181,71 @@
 
 (define (generate-md5s ls)
   (for/list ([f ls])
-            (list f (sys-md5 (path->string (build-path (destination) (target) f))))))
+    (list f (sys-md5 (path->string (build-path (destination) (target) f))))))
 
 (define (archive-directory)
   (define p (new process%))
   
   (seq p
-    [(initial? 'ERROR-STARTUP)
-     (andmap directory-exists? 
-             (list (source) (destination)))]
-    ;; TARBALL CREATION
-    [(true? 'ERROR-MAKEDIR)
-     (debug 'TAR "TAR CMD: ~a" (tar-cmd))
-     (parameterize ([current-directory
-                     (build-path (source) 'up)])
-       (exe (tar-cmd)))]
-    ;; MAKE THE MANIFEST
-    [(pass 'ERROR-TAR)
-     (parameterize ([current-directory
-                     (build-path (destination) (target))])
-       (exe
-        (system-call 'tar `(tvf ,(format "~a.tar" (target))
-                                ">"
-                                ,(format "~a.manifest" (target))))))]
-    [(pass 'ERROR-COMPRESS)
-     (when (compress?)
-       (debug 'COMPRESS "CMD: ~a" (compress-cmd))
-       (exe (compress-cmd)))]
-    ;; SPLIT EVERYTHING UP
-    [(pass 'ERROR-SPLIT)
-     (parameterize ([current-directory
-                     (build-path (destination) (target))])
-       (let ([size (file-size (archive))])
-         (debug 'SPLIT "Archive size [~a]" size)
-         (when (> size (block-size))
-           (debug 'SPLIT "SPLIT CMD: ~a" (split-cmd))
-           (exe (split-cmd)))))]
-    ;; CREATE PAR2 DATA
-    [(pass 'ERROR-PAR2)
-     (debug 'PAR2 "Creating [~a%] redundant archive files." (redundancy))
-     ;; We can just create a reundancy file for the original archive.
-     ;; The split files, when recombined, can be saved by the PAR2 file
-     ;; created from the (intact) original.
-     (debug 'PAR2 "CMD: ~a" (par2-cmd))
-     (parameterize ([current-directory 
-                     (build-path (destination) (target))])
-       (exe (par2-cmd)))]
-    ;; EMIT RECOVERY SCRIPT
-    [(pass 'ERROR-DELETE)
-     (debug 'MD5 "Generating MD5s for files.")
-     (let* ([check-script (build-path (destination) (target) 
-                                      (format "check-md5s-~a.sh" (target)))]
-            [op (open-output-file check-script #:exists 'replace)]
-            [md5s (generate-md5s (directory-list 
-                                  (build-path
-                                   (destination) (target))))])
-       ; (debug 'MD5 "MD5s:~n~a~n" md5s)
-       (fprintf op "#!/bin/bash~n")
-       (fprintf op "echo Checking MD5s~n")
-       (fprintf op "ERROR=0~n")
-       (newline op)
-       (for ([f (map first md5s)]
-             ;; 20191225 MCJ
-             ;; I only want the MD5
-             [md5 (map (λ (s) (first (regexp-split " " s)))
-                       (map second md5s))])
+       [(initial? 'ERROR-STARTUP)
+        (andmap directory-exists? 
+                (list (source) (destination)))]
+       ;; TARBALL CREATION
+       [(true? 'ERROR-MAKEDIR)
+        (debug 'TAR "TAR CMD: ~a" (tar-cmd))
+        (parameterize ([current-directory
+                        (build-path (source) 'up)])
+          (exe (tar-cmd)))]
+       ;; MAKE THE MANIFEST
+       [(pass 'ERROR-TAR)
+        (parameterize ([current-directory
+                        (build-path (destination) (target))])
+          (exe
+           (system-call 'tar `(tvf ,(format "~a.tar" (target))
+                                   ">"
+                                   ,(format "~a.manifest" (target))))))]
+       [(pass 'ERROR-COMPRESS)
+        (when (compress?)
+          (debug 'COMPRESS "CMD: ~a" (compress-cmd))
+          (exe (compress-cmd)))]
+       ;; SPLIT EVERYTHING UP
+       [(pass 'ERROR-SPLIT)
+        (parameterize ([current-directory
+                        (build-path (destination) (target))])
+          (let ([size (file-size (archive))])
+            (debug 'SPLIT "Archive size [~a]" size)
+            (when (> size (block-size))
+              (debug 'SPLIT "SPLIT CMD: ~a" (split-cmd))
+              (exe (split-cmd)))))]
+       ;; CREATE PAR2 DATA
+       [(pass 'ERROR-PAR2)
+        (debug 'PAR2 "Creating [~a%] redundant archive files." (redundancy))
+        ;; We can just create a reundancy file for the original archive.
+        ;; The split files, when recombined, can be saved by the PAR2 file
+        ;; created from the (intact) original.
+        (debug 'PAR2 "CMD: ~a" (par2-cmd))
+        (parameterize ([current-directory 
+                        (build-path (destination) (target))])
+          (exe (par2-cmd)))]
+       ;; EMIT RECOVERY SCRIPT
+       [(pass 'ERROR-DELETE)
+        (debug 'MD5 "Generating MD5s for files.")
+        (let* ([check-script (build-path (destination) (target) 
+                                         (format "check-md5s-~a.sh" (target)))]
+               [op (open-output-file check-script #:exists 'replace)]
+               [md5s (generate-md5s (directory-list 
+                                     (build-path
+                                      (destination) (target))))])
+          ; (debug 'MD5 "MD5s:~n~a~n" md5s)
+          (fprintf op "#!/bin/bash~n")
+          (fprintf op "echo Checking MD5s~n")
+          (fprintf op "ERROR=0~n")
+          (newline op)
+          (for ([f (map first md5s)]
+                ;; 20191225 MCJ
+                ;; I only want the MD5
+                [md5 (map (λ (s) (first (regexp-split " " s)))
+                          (map second md5s))])
             ;; We are about to delete the archive itself.
             (cond
               [(equal? (path->string f) (archive))
@@ -261,107 +262,154 @@
                (fprintf op "  echo MD5 error in \"~a\"~n" f)
                (fprintf op "fi~n")])
             (newline op))
-       (fprintf op "if [ $ERROR == 0 ]~n")
-       (fprintf op "then~n")
-       (fprintf op "  echo NO MD5 ERRORS FOUND~n")
-       (fprintf op "fi~n")
-       (close-output-port op)
-       (file-or-directory-permissions check-script #o744)
-       )]
-    
-    [(pass 'REBUILD-SCRIPT)
+          (fprintf op "if [ $ERROR == 0 ]~n")
+          (fprintf op "then~n")
+          (fprintf op "  echo NO MD5 ERRORS FOUND~n")
+          (fprintf op "fi~n")
+          (close-output-port op)
+          (file-or-directory-permissions check-script #o744)
+          )]
+
+       [(pass 'REBUILD-SCRIPT)
      
-     (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
-       (debug 'REBUILD "Generating the rebuild script.")
-       (let* ([script (build-path (destination)
-                                  (target)
-                                  (format "rebuild-~a.sh" (target)))]
-              [op (open-output-file script
-                                    #:exists 'replace)])
-         (fprintf op "#!/bin/bash~n")
+        (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
+          (debug 'REBUILD "Generating the rebuild script.")
+          (let* ([script (build-path (destination)
+                                     (target)
+                                     (format "rebuild-~a.sh" (target)))]
+                 [op (open-output-file script
+                                       #:exists 'replace)])
+            (fprintf op "#!/bin/bash~n")
            
-         (fprintf op "echo Concatenating ~a~n" (archive))
-         (fprintf op "~a~n"
-                  (system-call 'cat 
-                               `("*-split*" ">" 
-                                            ,(archive))))
-         (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
-         (fprintf op "echo Repairing integrity of ~a~n" (archive))
-         (fprintf op "~a~n"
-                  (system-call 'par2 
-                               `(r ,(format "~a.par2" (target)))))
-         ;; Decompress
+            (fprintf op "echo Concatenating ~a~n" (archive))
+            (fprintf op "~a~n"
+                     (system-call 'cat 
+                                  `("*-split*" ">" 
+                                               ,(archive))))
+            (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
+            (fprintf op "echo Repairing integrity of ~a~n" (archive))
+            (fprintf op "~a~n"
+                     (system-call 'par2 
+                                  `(r ,(format "~a.par2" (target)))))
+            ;; Decompress
            
-         (when (compress?)
-           (fprintf op "echo Decompressing.~n")
-           (fprintf op "if [ -f ~a ]; then~n" (archive))
-           (fprintf op "  bunzip2 ~a~n" (archive))
-           (fprintf op "fi~n"))
+            (when (compress?)
+              (fprintf op "echo Decompressing.~n")
+              (fprintf op "if [ -f ~a ]; then~n" (archive))
+              (fprintf op "  bunzip2 ~a~n" (archive))
+              (fprintf op "fi~n"))
            
-         (fprintf op "echo Done.~n")
-         (close-output-port op)
-         (exe (system-call 'chmod `(755 ,script)))
-         ))]
+            (fprintf op "echo Done.~n")
+            (close-output-port op)
+            (exe (system-call 'chmod `(755 ,script)))
+            ))]
     
     
-    ;; REMOVE THE TARBALL IF WE SPLIT IT
-    [(pass 'ERROR-PAR2)
-     (parameterize ([current-directory
-                     (build-path (destination) (target))])
-       (let ([size (file-size (archive))])
-         (debug 'SPLIT "Archive size [~a]" size)
-         (when (> size (block-size))
-           (debug 'TAR "Removing the archive at [~a]" (archive))
-           (delete-file (archive)))))]
-    ;; DONE
-    [(pass 'ERROR-DONE)
-     (printf "Done.~n")]
+       ;; REMOVE THE TARBALL IF WE SPLIT IT
+       [(pass 'ERROR-PAR2)
+        (parameterize ([current-directory
+                        (build-path (destination) (target))])
+          (let ([size (file-size (archive))])
+            (debug 'SPLIT "Archive size [~a]" size)
+            (when (> size (block-size))
+              (debug 'TAR "Removing the archive at [~a]" (archive))
+              (delete-file (archive)))))]
+       
+       [(pass 'GPG-ENCRYPT)
+        (when (gpg-key)
+          (debug 'GPG "Encrypting files.")
+          (let ([files (directory-list 
+                        (build-path
+                         (destination) (target)))])
+            (for ([f files])
+              ;; Batch and yes allow GPG to overwrite output files.
+              (define cmd (system-call 'gpg `(--batch --yes --encrypt -r ,(gpg-key) ,(format "~a/~a/~a" (destination) (target) f))))
+              ;; (debug 'GPG (format "~s~n" cmd))
+              (define res (exe cmd))
+              (when res
+                ;;(debug 'GPG "Deleting source, keeping encrypted file.")
+                (delete-file (format "~a/~a/~a" (destination) (target) f))
+                )))
+          )
+        ]
+
+       [(pass 'GPG-DECRYPT-SCRIPT)
+        (when (gpg-key)
+          (debug 'GPG "Generating the decrypt script.")
+          (let* ([script (build-path (destination)
+                                     (target)
+                                     (format "decrypt-~a.sh" (target)))]
+                 [op (open-output-file script #:exists 'replace)])
+            (fprintf op "#!/bin/bash~n")
+            (fprintf op "~n")
+            (for ([f (directory-list
+                      (build-path (destination) (target)))])
+              (define decrypted (regexp-replace ".gpg" (~a f) ""))
+              (when (regexp-match ".gpg" f)
+                (fprintf op "gpg --decrypt ~a > ~a~n" f decrypted)
+                (when (regexp-match ".sh" decrypted)
+                  (define cmd (system-call 'chmod `(755 ,(build-path script))))
+                  (exe cmd)))
+              ;; GPG does this
+              ;; (delete-file f)
+              )
+            
+            (fprintf op "chmod 755 ~a" (format "check-md5s-~a.sh~n" (target)))
+            (fprintf op (format "if test -f rebuild-~a.sh ; then chmod 755 rebuild-~a.sh ; fi~n" (target) (target)))
+            (fprintf op "echo Done.~n")
+            (close-output-port op)
+            (exe (system-call 'chmod `(755 ,script)))
+            ))]
+    
+       ;; DONE
+       [(pass 'ERROR-DONE)
+        (printf "Done.~n")]
     
     
-    ))
+       ))
 
 (define (archive-disk-image)
   (define p (new process%))
   
   (seq p
-    [(initial? 'ERROR-STARTUP)
-     (and (directory-exists? (destination)) 
-          (file-exists? (source)))]
-    ;; SPLIT EVERYTHING UP
-    [(pass 'ERROR-SPLIT)
-     (parameterize ([current-directory
-                     (build-path (destination) (target))])
-       (let ([size (file-size (source))])
-         (debug 'SPLIT "Disk image size [~a]" size)
-         (when (> size (block-size))
-           (debug 'SPLIT "SPLIT CMD: ~a" (split-disk-image-cmd))
-           (exe (split-disk-image-cmd)))))]
-    ;; CREATE PAR2 DATA
-    [(pass 'ERROR-PAR2)
-     (debug 'PAR2 "Creating [~a%] redundant archive files." (redundancy))
-     ;; We can just create a reundancy file for the original archive.
-     ;; The split files, when recombined, can be saved by the PAR2 file
-     ;; created from the (intact) original.
-     (debug 'PAR2 "CMD: ~a" (par2-cmd))
-     (parameterize ([current-directory 
-                     (build-path (destination) (target))])
-       (exe (par2-cmd)))]
-    ;; EMIT RECOVERY SCRIPT
-    [(pass 'ERROR-DELETE)
-     (debug 'MD5 "Generating MD5s for files.")
-     (let* ([check-script (build-path (destination) (target) 
-                                      (format "check-md5s-~a.sh" (target)))]
-            [op (open-output-file check-script #:exists 'replace)]
-            [md5s (generate-md5s (directory-list 
-                                  (build-path
-                                   (destination) (target))))])
-       ; (debug 'MD5 "MD5s:~n~a~n" md5s)
-       (fprintf op "#!/bin/bash~n")
-       (fprintf op "echo Checking MD5s~n")
-       (fprintf op "ERROR=0~n")
-       (newline op)
-       (for ([f (map first md5s)]
-             [md5 (map second md5s)])
+       [(initial? 'ERROR-STARTUP)
+        (and (directory-exists? (destination)) 
+             (file-exists? (source)))]
+       ;; SPLIT EVERYTHING UP
+       [(pass 'ERROR-SPLIT)
+        (parameterize ([current-directory
+                        (build-path (destination) (target))])
+          (let ([size (file-size (source))])
+            (debug 'SPLIT "Disk image size [~a]" size)
+            (when (> size (block-size))
+              (debug 'SPLIT "SPLIT CMD: ~a" (split-disk-image-cmd))
+              (exe (split-disk-image-cmd)))))]
+       ;; CREATE PAR2 DATA
+       [(pass 'ERROR-PAR2)
+        (debug 'PAR2 "Creating [~a%] redundant archive files." (redundancy))
+        ;; We can just create a reundancy file for the original archive.
+        ;; The split files, when recombined, can be saved by the PAR2 file
+        ;; created from the (intact) original.
+        (debug 'PAR2 "CMD: ~a" (par2-cmd))
+        (parameterize ([current-directory 
+                        (build-path (destination) (target))])
+          (exe (par2-cmd)))]
+       ;; EMIT RECOVERY SCRIPT
+       [(pass 'ERROR-DELETE)
+        (debug 'MD5 "Generating MD5s for files.")
+        (let* ([check-script (build-path (destination) (target) 
+                                         (format "check-md5s-~a.sh" (target)))]
+               [op (open-output-file check-script #:exists 'replace)]
+               [md5s (generate-md5s (directory-list 
+                                     (build-path
+                                      (destination) (target))))])
+          ; (debug 'MD5 "MD5s:~n~a~n" md5s)
+          (fprintf op "#!/bin/bash~n")
+          (fprintf op "echo Checking MD5s~n")
+          (fprintf op "ERROR=0~n")
+          (newline op)
+          (for ([f (map first md5s)]
+                [md5 (map second md5s)])
             ;; We are about to delete the archive itself.
             (cond
               [(equal? (path->string f) (archive))
@@ -378,62 +426,62 @@
                (fprintf op "  echo MD5 error in \"~a\"~n" f)
                (fprintf op "fi~n")])
             (newline op))
-       (fprintf op "if [ $ERROR == 0 ]~n")
-       (fprintf op "then~n")
-       (fprintf op "  echo NO MD5 ERRORS FOUND~n")
-       (fprintf op "fi~n")
-       (close-output-port op)
-       (file-or-directory-permissions check-script #o744)
-       )]
+          (fprintf op "if [ $ERROR == 0 ]~n")
+          (fprintf op "then~n")
+          (fprintf op "  echo NO MD5 ERRORS FOUND~n")
+          (fprintf op "fi~n")
+          (close-output-port op)
+          (file-or-directory-permissions check-script #o744)
+          )]
     
-    [(pass 'ERROR-DELETE)
-     (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
-       (let* ([script (build-path (destination)
-                                  (target)
-                                  (format "rebuild-~a.sh" (target)))]
-              [op (open-output-file script
-                                    #:exists 'replace)])
-         (fprintf op "#!/bin/bash~n")
+       [(pass 'ERROR-DELETE)
+        (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
+          (let* ([script (build-path (destination)
+                                     (target)
+                                     (format "rebuild-~a.sh" (target)))]
+                 [op (open-output-file script
+                                       #:exists 'replace)])
+            (fprintf op "#!/bin/bash~n")
            
-         (fprintf op "echo Concatenating ~a~n" (archive))
-         (fprintf op "~a~n"
-                  (system-call 'cat 
-                               `("*-split*" ">" 
-                                            ,(archive))))
-         (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
-         (fprintf op "echo Repairing integrity of ~a~n" (archive))
-         (fprintf op "~a~n"
-                  (system-call 'par2 
-                               `(r ,(format "~a.par2" (target)))))
-         ;; Decompress
+            (fprintf op "echo Concatenating ~a~n" (archive))
+            (fprintf op "~a~n"
+                     (system-call 'cat 
+                                  `("*-split*" ">" 
+                                               ,(archive))))
+            (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
+            (fprintf op "echo Repairing integrity of ~a~n" (archive))
+            (fprintf op "~a~n"
+                     (system-call 'par2 
+                                  `(r ,(format "~a.par2" (target)))))
+            ;; Decompress
            
-         (when (compress?)
-           (fprintf op "echo Decompressing.~n")
-           (fprintf op "if [ -f ~a ]; then~n" (archive))
-           (fprintf op "  bunzip2 ~a~n" (archive))
-           (fprintf op "fi~n"))
+            (when (compress?)
+              (fprintf op "echo Decompressing.~n")
+              (fprintf op "if [ -f ~a ]; then~n" (archive))
+              (fprintf op "  bunzip2 ~a~n" (archive))
+              (fprintf op "fi~n"))
            
-         (fprintf op "echo Done.~n")
-         (close-output-port op)
-         (exe (system-call 'chmod `(755 ,script)))
-         ))]
+            (fprintf op "echo Done.~n")
+            (close-output-port op)
+            (exe (system-call 'chmod `(755 ,script)))
+            ))]
     
     
-    ;; REMOVE THE TARBALL IF WE SPLIT IT
-    [(pass 'ERROR-PAR2)
-     (parameterize ([current-directory
-                     (build-path (destination) (target))])
-       (let ([size (file-size (archive))])
-         (debug 'SPLIT "Archive size [~a]" size)
-         (when (> size (block-size))
-           (debug 'TAR "Removing the archive at [~a]" (archive))
-           (delete-file (archive)))))]
-    ;; DONE
-    [(pass 'ERROR-DONE)
-     (printf "Done.~n")]
+       ;; REMOVE THE TARBALL IF WE SPLIT IT
+       [(pass 'ERROR-PAR2)
+        (parameterize ([current-directory
+                        (build-path (destination) (target))])
+          (let ([size (file-size (archive))])
+            (debug 'SPLIT "Archive size [~a]" size)
+            (when (> size (block-size))
+              (debug 'TAR "Removing the archive at [~a]" (archive))
+              (delete-file (archive)))))]
+       ;; DONE
+       [(pass 'ERROR-DONE)
+        (printf "Done.~n")]
     
     
-    ))
+       ))
 
 (define main
   (command-line 
@@ -464,6 +512,11 @@
    [("-c" "--compress") 
     "Compress with BZIP2."
     (compress? true)]
+
+   [("-g" "--gpg") email
+                   "Encrypt with a GPG keypair."
+                   (gpg-key email)]
+   
    #:args (src dst)
    
    (when (not (year))
