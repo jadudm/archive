@@ -190,12 +190,14 @@
        [(initial? 'ERROR-STARTUP)
         (andmap directory-exists? 
                 (list (source) (destination)))]
+       
        ;; TARBALL CREATION
        [(true? 'ERROR-MAKEDIR)
-        (debug 'TAR "TAR CMD: ~a" (tar-cmd))
+        (debug 'TAR "~a" (tar-cmd))
         (parameterize ([current-directory
                         (build-path (source) 'up)])
           (exe (tar-cmd)))]
+       
        ;; MAKE THE MANIFEST
        [(pass 'ERROR-TAR)
         (parameterize ([current-directory
@@ -204,10 +206,39 @@
            (system-call 'tar `(tvf ,(format "~a.tar" (target))
                                    ">"
                                    ,(format "~a.manifest" (target))))))]
+       
+       [(pass 'GPG-ENCRYPT)
+        (when (gpg-key)
+          (debug 'GPG "Encrypting tarball.")
+          (parameterize ([current-directory
+                          (build-path (destination) (target))])
+            
+            ;; Batch and yes allow GPG to overwrite output files.
+            (define manifestcmd (system-call 'gpg `(--batch --yes --encrypt -r ,(gpg-key) ,(format "~a.manifest" (target)))))
+            (debug 'GPG (format "~a~n" manifestcmd))
+            (define manifest-res (exe manifestcmd))
+            
+            (define tarcmd (system-call 'gpg `(--batch --yes --encrypt -r ,(gpg-key) ,(format "~a.tar" (target)))))
+            (debug 'GPG (format "~a~n" tarcmd))
+            (define tar-res (exe tarcmd))
+            (debug 'GPG "res manifest: ~a tar: ~a~n" manifest-res tar-res)
+            
+            (when (and (zero? manifest-res) (zero? tar-res))
+              ;; Delete the source tarball
+              (delete-file (format "~a.tar" (target)))
+              (delete-file (format "~a.manifest" (target)))
+              ;; Update the global name for further steps.
+              (tarfile (format "~a.tar.gpg" (target)))
+              )))
+        ]
+       
        [(pass 'ERROR-COMPRESS)
         (when (compress?)
-          (debug 'COMPRESS "CMD: ~a" (compress-cmd))
-          (exe (compress-cmd)))]
+          (parameterize ([current-directory
+                          (build-path (destination) (target))])
+            (debug 'COMPRESS "~a" (compress-cmd))
+            (exe (compress-cmd))))]
+       
        ;; SPLIT EVERYTHING UP
        [(pass 'ERROR-SPLIT)
         (parameterize ([current-directory
@@ -217,6 +248,7 @@
             (when (> size (block-size))
               (debug 'SPLIT "SPLIT CMD: ~a" (split-cmd))
               (exe (split-cmd)))))]
+       
        ;; CREATE PAR2 DATA
        [(pass 'ERROR-PAR2)
         (debug 'PAR2 "Creating [~a%] redundant archive files." (redundancy))
@@ -227,6 +259,7 @@
         (parameterize ([current-directory 
                         (build-path (destination) (target))])
           (exe (par2-cmd)))]
+       
        ;; EMIT RECOVERY SCRIPT
        [(pass 'ERROR-DELETE)
         (debug 'MD5 "Generating MD5s for files.")
@@ -272,37 +305,43 @@
 
        [(pass 'REBUILD-SCRIPT)
      
-        (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
-          (debug 'REBUILD "Generating the rebuild script.")
-          (let* ([script (build-path (destination)
-                                     (target)
-                                     (format "rebuild-~a.sh" (target)))]
-                 [op (open-output-file script
-                                       #:exists 'replace)])
-            (fprintf op "#!/bin/bash~n")
-           
+        (debug 'REBUILD "Generating the rebuild script.")
+        (let* ([script (build-path (destination)
+                                   (target)
+                                   (format "rebuild-~a.sh" (target)))]
+               [op (open-output-file script
+                                     #:exists 'replace)])
+          (fprintf op "#!/bin/bash~n")
+            
+          (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
+              
             (fprintf op "echo Concatenating ~a~n" (archive))
             (fprintf op "~a~n"
                      (system-call 'cat 
                                   `("*-split*" ">" 
-                                               ,(archive))))
-            (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
-            (fprintf op "echo Repairing integrity of ~a~n" (archive))
-            (fprintf op "~a~n"
-                     (system-call 'par2 
-                                  `(r ,(format "~a.par2" (target)))))
-            ;; Decompress
+                                               ,(archive)))))
+              
+          (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
+          (fprintf op "echo Repairing integrity of ~a~n" (archive))
+          (fprintf op "~a~n"
+                   (system-call 'par2 
+                                `(r ,(format "~a.par2" (target)))))
+          ;; Decompress
            
-            (when (compress?)
-              (fprintf op "echo Decompressing.~n")
-              (fprintf op "if [ -f ~a ]; then~n" (archive))
-              (fprintf op "  bunzip2 ~a~n" (archive))
-              (fprintf op "fi~n"))
-           
-            (fprintf op "echo Done.~n")
-            (close-output-port op)
-            (exe (system-call 'chmod `(755 ,script)))
-            ))]
+          (when (compress?)
+            (fprintf op "echo Decompressing.~n")
+            (fprintf op "if [ -f ~a ]; then~n" (archive))
+            (fprintf op "  bunzip2 ~a~n" (archive))
+            (fprintf op "fi~n"))
+            
+          (when (gpg-key)
+            (fprintf op "gpg --decrypt ~a.tar.gpg > ~a.tar~n" (target) (target))
+            )
+            
+          (fprintf op "echo Done.~n")
+          (close-output-port op)
+          (exe (system-call 'chmod `(755 ,script)))
+          )]
     
     
        ;; REMOVE THE TARBALL IF WE SPLIT IT
@@ -315,52 +354,6 @@
               (debug 'TAR "Removing the archive at [~a]" (archive))
               (delete-file (archive)))))]
        
-       [(pass 'GPG-ENCRYPT)
-        (when (gpg-key)
-          (debug 'GPG "Encrypting files.")
-          (let ([files (directory-list 
-                        (build-path
-                         (destination) (target)))])
-            (for ([f files])
-              ;; Batch and yes allow GPG to overwrite output files.
-              (define cmd (system-call 'gpg `(--batch --yes --encrypt -r ,(gpg-key) ,(format "~a/~a/~a" (destination) (target) f))))
-              ;; (debug 'GPG (format "~s~n" cmd))
-              (define res (exe cmd))
-              (when res
-                ;;(debug 'GPG "Deleting source, keeping encrypted file.")
-                (delete-file (format "~a/~a/~a" (destination) (target) f))
-                )))
-          )
-        ]
-
-       [(pass 'GPG-DECRYPT-SCRIPT)
-        (when (gpg-key)
-          (debug 'GPG "Generating the decrypt script.")
-          (let* ([script (build-path (destination)
-                                     (target)
-                                     (format "decrypt-~a.sh" (target)))]
-                 [op (open-output-file script #:exists 'replace)])
-            (fprintf op "#!/bin/bash~n")
-            (fprintf op "~n")
-            (for ([f (directory-list
-                      (build-path (destination) (target)))])
-              (define decrypted (regexp-replace ".gpg" (~a f) ""))
-              (when (regexp-match ".gpg" f)
-                (fprintf op "gpg --decrypt ~a > ~a~n" f decrypted)
-                (when (regexp-match ".sh" decrypted)
-                  (define cmd (system-call 'chmod `(755 ,(build-path script))))
-                  (exe cmd)))
-              ;; GPG does this
-              ;; (delete-file f)
-              )
-            
-            (fprintf op "chmod 755 ~a" (format "check-md5s-~a.sh~n" (target)))
-            (fprintf op (format "if test -f rebuild-~a.sh ; then chmod 755 rebuild-~a.sh ; fi~n" (target) (target)))
-            (fprintf op "echo Done.~n")
-            (close-output-port op)
-            (exe (system-call 'chmod `(755 ,script)))
-            ))]
-    
        ;; DONE
        [(pass 'ERROR-DONE)
         (printf "Done.~n")]
@@ -543,6 +536,8 @@
    
       ;; Set the archive extension
       (cond
+        [(and (gpg-key) (compress?))
+         (extension "tar.gpg.bz2")]
         [(compress?)
          (extension "tar.bz2")]
         [else (extension "tar")])
