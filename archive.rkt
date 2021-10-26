@@ -335,6 +335,7 @@
             (fprintf op "fi~n"))
             
           (when (gpg-key)
+            (fprintf op "echo Decrypting the GPG ASC into a tarball.")
             (fprintf op "gpg --decrypt ~a.tar.gpg > ~a.tar~n" (target) (target))
             )
             
