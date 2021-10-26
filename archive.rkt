@@ -52,6 +52,8 @@
 (define extension    (make-parameter "tar"))
 (define threshold    (make-parameter 0.65))
 (define gpg-key      (make-parameter false))
+(define b2-bucket    (make-parameter false))
+
 
 ;; Adding disk images
 (define disk-image   (make-parameter false))
@@ -214,21 +216,21 @@
                           (build-path (destination) (target))])
             
             ;; Batch and yes allow GPG to overwrite output files.
-            (define manifestcmd (system-call 'gpg `(--batch --yes --encrypt -r ,(gpg-key) ,(format "~a.manifest" (target)))))
-            (debug 'GPG (format "~a~n" manifestcmd))
+            (define manifestcmd (system-call 'gpg `(-c --batch --yes --passphrase ,(gpg-key) -o ,(format "~a.manifest.asc" (target)) ,(format "~a.manifest" (target)))))
+            (debug 'GPG (format "~a" manifestcmd))
             (define manifest-res (exe manifestcmd))
             
-            (define tarcmd (system-call 'gpg `(--batch --yes --encrypt -r ,(gpg-key) ,(format "~a.tar" (target)))))
-            (debug 'GPG (format "~a~n" tarcmd))
+            (define tarcmd (system-call 'gpg `(-c --batch --yes --passphrase ,(gpg-key) -o ,(format "~a.tar.asc" (target)) ,(format "~a.tar" (target)))))
+            (debug 'GPG (format "~a" tarcmd))
             (define tar-res (exe tarcmd))
-            (debug 'GPG "res manifest: ~a tar: ~a~n" manifest-res tar-res)
+            (debug 'GPG "res manifest: ~a tar: ~a" manifest-res tar-res)
             
             (when (and (zero? manifest-res) (zero? tar-res))
               ;; Delete the source tarball
               (delete-file (format "~a.tar" (target)))
               (delete-file (format "~a.manifest" (target)))
               ;; Update the global name for further steps.
-              (tarfile (format "~a.tar.gpg" (target)))
+              (tarfile (format "~a.tar.asc" (target)))
               )))
         ]
        
@@ -312,7 +314,15 @@
                [op (open-output-file script
                                      #:exists 'replace)])
           (fprintf op "#!/bin/bash~n")
+
+          (when (gpg-key)
+            (fprintf op "if [ -z \"$PASSPHRASE\" ]~n")
+            (fprintf op "then~n")
+            (fprintf op "    echo \"No passphrase set. Exiting.\"~n")
+            (fprintf op "    exit~n")
+            (fprintf op "fi~n"))
             
+          
           (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
               
             (fprintf op "echo Concatenating ~a~n" (archive))
@@ -335,8 +345,9 @@
             (fprintf op "fi~n"))
             
           (when (gpg-key)
-            (fprintf op "echo Decrypting the GPG ASC into a tarball.")
-            (fprintf op "gpg --decrypt ~a.tar.gpg > ~a.tar~n" (target) (target))
+            (fprintf op "echo Decrypting the GPG ASC into a tarball.~n")
+            (fprintf op "gpg --decrypt --batch --passphrase ${PASSPHRASE} ~a.tar.asc > ~a.tar~n" (target) (target))
+            (fprintf op "gpg --decrypt --batch --passphrase ${PASSPHRASE} ~a.manifest.asc > ~a.manifest~n" (target) (target))
             )
             
           (fprintf op "echo Done.~n")
@@ -355,6 +366,14 @@
               (debug 'TAR "Removing the archive at [~a]" (archive))
               (delete-file (archive)))))]
        
+       [(pass 'B2-UPLOAD)
+        (when (b2-bucket)
+          (parameterize ([current-directory (build-path (destination) (target))])
+            (for ([f (directory-list)])
+              (define cmd (system-call 'b2 `(upload-file ,(b2-bucket) ,f ,f)))
+              (debug 'B2 cmd)
+              (exe cmd))))]
+       
        ;; DONE
        [(pass 'ERROR-DONE)
         (printf "Done.~n")]
@@ -362,120 +381,7 @@
     
        ))
 
-(define (archive-disk-image)
-  (define p (new process%))
-  
-  (seq p
-       [(initial? 'ERROR-STARTUP)
-        (and (directory-exists? (destination)) 
-             (file-exists? (source)))]
-       ;; SPLIT EVERYTHING UP
-       [(pass 'ERROR-SPLIT)
-        (parameterize ([current-directory
-                        (build-path (destination) (target))])
-          (let ([size (file-size (source))])
-            (debug 'SPLIT "Disk image size [~a]" size)
-            (when (> size (block-size))
-              (debug 'SPLIT "SPLIT CMD: ~a" (split-disk-image-cmd))
-              (exe (split-disk-image-cmd)))))]
-       ;; CREATE PAR2 DATA
-       [(pass 'ERROR-PAR2)
-        (debug 'PAR2 "Creating [~a%] redundant archive files." (redundancy))
-        ;; We can just create a reundancy file for the original archive.
-        ;; The split files, when recombined, can be saved by the PAR2 file
-        ;; created from the (intact) original.
-        (debug 'PAR2 "CMD: ~a" (par2-cmd))
-        (parameterize ([current-directory 
-                        (build-path (destination) (target))])
-          (exe (par2-cmd)))]
-       ;; EMIT RECOVERY SCRIPT
-       [(pass 'ERROR-DELETE)
-        (debug 'MD5 "Generating MD5s for files.")
-        (let* ([check-script (build-path (destination) (target) 
-                                         (format "check-md5s-~a.sh" (target)))]
-               [op (open-output-file check-script #:exists 'replace)]
-               [md5s (generate-md5s (directory-list 
-                                     (build-path
-                                      (destination) (target))))])
-          ; (debug 'MD5 "MD5s:~n~a~n" md5s)
-          (fprintf op "#!/bin/bash~n")
-          (fprintf op "echo Checking MD5s~n")
-          (fprintf op "ERROR=0~n")
-          (newline op)
-          (for ([f (map first md5s)]
-                [md5 (map second md5s)])
-            ;; We are about to delete the archive itself.
-            (cond
-              [(equal? (path->string f) (archive))
-               (fprintf op "# The archive '~a' should check as '~a'~n"
-                        f md5)]
-              [(equal? (path->string f) (format "check-md5s-~a.sh" (target)))
-               ;; Skip the check script; we change the permissions in a moment.
-               'DoNothing]
-              [else
-               (fprintf op "echo Checking ~a~n" f)
-               (fprintf op "SUM=`md5 -q \"~a\"`~n" f)             
-               (fprintf op "if [ ${SUM} != \"~a\" ]~nthen~n" md5)
-               (fprintf op "ERROR=1~n")
-               (fprintf op "  echo MD5 error in \"~a\"~n" f)
-               (fprintf op "fi~n")])
-            (newline op))
-          (fprintf op "if [ $ERROR == 0 ]~n")
-          (fprintf op "then~n")
-          (fprintf op "  echo NO MD5 ERRORS FOUND~n")
-          (fprintf op "fi~n")
-          (close-output-port op)
-          (file-or-directory-permissions check-script #o744)
-          )]
-    
-       [(pass 'ERROR-DELETE)
-        (when (> (file-size (build-path (destination) (target) (archive))) (block-size))
-          (let* ([script (build-path (destination)
-                                     (target)
-                                     (format "rebuild-~a.sh" (target)))]
-                 [op (open-output-file script
-                                       #:exists 'replace)])
-            (fprintf op "#!/bin/bash~n")
-           
-            (fprintf op "echo Concatenating ~a~n" (archive))
-            (fprintf op "~a~n"
-                     (system-call 'cat 
-                                  `("*-split*" ">" 
-                                               ,(archive))))
-            (fprintf op "echo We always attempt a repair---this is not a cause for alarm.~n")
-            (fprintf op "echo Repairing integrity of ~a~n" (archive))
-            (fprintf op "~a~n"
-                     (system-call 'par2 
-                                  `(r ,(format "~a.par2" (target)))))
-            ;; Decompress
-           
-            (when (compress?)
-              (fprintf op "echo Decompressing.~n")
-              (fprintf op "if [ -f ~a ]; then~n" (archive))
-              (fprintf op "  bunzip2 ~a~n" (archive))
-              (fprintf op "fi~n"))
-           
-            (fprintf op "echo Done.~n")
-            (close-output-port op)
-            (exe (system-call 'chmod `(755 ,script)))
-            ))]
-    
-    
-       ;; REMOVE THE TARBALL IF WE SPLIT IT
-       [(pass 'ERROR-PAR2)
-        (parameterize ([current-directory
-                        (build-path (destination) (target))])
-          (let ([size (file-size (archive))])
-            (debug 'SPLIT "Archive size [~a]" size)
-            (when (> size (block-size))
-              (debug 'TAR "Removing the archive at [~a]" (archive))
-              (delete-file (archive)))))]
-       ;; DONE
-       [(pass 'ERROR-DONE)
-        (printf "Done.~n")]
-    
-    
-       ))
+
 
 (define main
   (command-line 
@@ -507,9 +413,12 @@
     "Compress with BZIP2."
     (compress? true)]
 
-   [("-g" "--gpg") email
-                   "Encrypt with a GPG keypair."
-                   (gpg-key email)]
+   [("-g" "--gpg") passphrase
+                   "Encrypt with a GPG symmetric passphrase."
+                   (gpg-key passphrase)]
+   [("-u" "--upload") bucket
+                      "Upload to B2 bucket."
+                      (b2-bucket bucket)]
    
    #:args (src dst)
    
@@ -538,7 +447,7 @@
       ;; Set the archive extension
       (cond
         [(and (gpg-key) (compress?))
-         (extension "tar.gpg.bz2")]
+         (extension "tar.asc.bz2")]
         [(compress?)
          (extension "tar.bz2")]
         [else (extension "tar")])
@@ -558,28 +467,10 @@
       (unless (directory-exists? (build-path (destination) (target)))
         (make-directory (build-path (destination) (target))))
 
-      (archive-directory)]
-     ;; If it is a disk image
-     [(file-exists? (source))
-      (if (tag)
-          (target (format "~a-~a-~a" (year) (tag)
-                          (regexp-replace
-                           (format ".~a$" (file-extension (source)))
-                           (extract-filename (source))
-                           "")))
-          (target (format "~a-~a" (year)
-                          (regexp-replace
-                           (format ".~a$" (file-extension (source)))
-                           (extract-filename (source))
-                           ""))))
- 
-      (unless (directory-exists? (destination))
-        (make-directory (destination)))
-   
-      (unless (directory-exists? (build-path (destination) (target)))
-        (make-directory (build-path (destination) (target))))
+      (archive-directory)
       
-      (archive-disk-image)]
+      ]
+     
      [else
       (error 'SOURCE "Source is neither a directory or disk image.")])
    
