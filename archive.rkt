@@ -62,11 +62,34 @@
 (define block-size   (make-parameter 50000000))
 
 (define (tar-cmd)
-  (system-call 
-   'tar
-   `(cf ;cvf
-     ,(->string (tarfile))
-     ,(extract-filename (source)))))
+  (cond
+    [(gpg-key)
+     ;; tar -cvzf - folder | gpg -c > folder.tar.gz.gpg
+     (system-call
+      'tar
+      `(cf
+        -
+        ,(extract-filename (source))
+        \|
+        gpg
+        -c
+        --batch
+        --yes
+        --passphrase
+        ,(gpg-key)
+        >
+        ,(build-path
+          (destination)
+          (target)
+          (format "~a.tar.asc" (target)))))
+     ]
+    [else
+     (system-call 
+      'tar
+      `(cf ;cvf
+        ,(->string (tarfile))
+        ,(extract-filename (source))))
+     ]))
 
 (define (split-cmd)
   (system-call
@@ -202,15 +225,20 @@
        
        ;; MAKE THE MANIFEST
        [(pass 'ERROR-TAR)
-        (parameterize ([current-directory
-                        (build-path (destination) (target))])
-          (exe
-           (system-call 'tar `(tvf ,(format "~a.tar" (target))
-                                   ">"
-                                   ,(format "~a.manifest" (target))))))]
+        ;; 20230101 MCJ
+        ;; We can only build a manifest when we are not encrypting.
+        ;; Besides, the manifest is info leakage when encrypting.
+        (when (not (gpg-key))
+          (parameterize ([current-directory
+                          (build-path (destination) (target))])
+            (exe
+             (system-call 'tar `(tvf ,(format "~a.tar" (target))
+                                     ">"
+                                     ,(format "~a.manifest" (target)))))))]
        
        [(pass 'GPG-ENCRYPT)
-        (when (gpg-key)
+        ;; 20230101 MCJ Skipping for a new, in-place approach.
+        (when false ;;(gpg-key)
           (debug 'GPG "Encrypting tarball.")
           (parameterize ([current-directory
                           (build-path (destination) (target))])
@@ -347,7 +375,8 @@
           (when (gpg-key)
             (fprintf op "echo Decrypting the GPG ASC into a tarball.~n")
             (fprintf op "gpg --decrypt --batch --passphrase ${PASSPHRASE} ~a.tar.asc > ~a.tar~n" (target) (target))
-            (fprintf op "gpg --decrypt --batch --passphrase ${PASSPHRASE} ~a.manifest.asc > ~a.manifest~n" (target) (target))
+            ;; 20230101 MCJ No longer have a manifest for encrypted files.
+            ;; (fprintf op "gpg --decrypt --batch --passphrase ${PASSPHRASE} ~a.manifest.asc > ~a.manifest~n" (target) (target))
             )
             
           (fprintf op "echo Done.~n")
@@ -439,7 +468,9 @@
       (cond
         [(compressible? (source))
          (debug 'COMPRESS "Looks like the source is compressible.")
-         (compress? true)]
+         (when (not (compress?))
+           (debug 'COMPRESS "You could use the --compress flag to gain some space."))
+         ]
         [else
          (debug 'COMPRESS
                 "Too many files that won't compress. Skipping BZ2.")])
@@ -447,9 +478,14 @@
       ;; Set the archive extension
       (cond
         [(and (gpg-key) (compress?))
-         (extension "tar.asc.bz2")]
-        [(compress?)
+         (debug 'SETUP "Cannot encrypt and compress. Removing --compress flag.")
+         (compress? false)
+         (extension "tar.asc")]
+        [(and (compress?) (not (compress?)))
          (extension "tar.bz2")]
+        ;; 20230101 MCJ Realized no handling for encrypted/uncompressed files.
+        [(gpg-key)
+         (extension "tar.asc")]
         [else (extension "tar")])
 
       (if (tag)
