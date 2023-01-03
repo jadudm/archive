@@ -465,15 +465,11 @@
      ;; If we are archiving a directory
      [(directory-exists? (source))
       ;; Check compressibility
-      (cond
-        [(compressible? (source))
-         (debug 'COMPRESS "Looks like the source is compressible.")
-         (when (not (compress?))
-           (debug 'COMPRESS "You could use the --compress flag to gain some space."))
-         ]
-        [else
-         (debug 'COMPRESS
-                "Too many files that won't compress. Skipping BZ2.")])
+      (when (compress?)
+        (if (compressible? (source))
+            (debug 'COMPRESS "Looks like the source is compressible.")
+            (debug 'COMPRESS "Does not look like this is compressible. Skipping BZ2."))
+         )
    
       ;; Set the archive extension
       (cond
